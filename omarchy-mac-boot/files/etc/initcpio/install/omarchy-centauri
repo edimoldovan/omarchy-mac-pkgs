@@ -1,0 +1,37 @@
+#!/bin/bash
+# The N1 Wi-Fi and Bluetooth firmware, built for this Mac from the installer's inputs in vendor firmware.
+# Its driver is built into the kernel and loads before the root is mounted, so the image goes in the initramfs.
+
+build() {
+  local device_tree=${OMARCHY_CENTAURI_DEVICE_TREE:-/proc/device-tree}
+  local inputs=${OMARCHY_CENTAURI_INPUTS:-/lib/firmware/vendor/apple/centauri}
+  local stitcher=${OMARCHY_CENTAURI_FTAB:-/usr/lib/omarchy/initcpio/omarchy-centauri-ftab}
+  local property name= image
+  while IFS= read -r -d '' property; do
+    if [[ $(tr -d '\0' <"$property") == apple/centauri/* ]]; then
+      name=$(tr -d '\0' <"$property")
+      break
+    fi
+  done < <(find "$device_tree" -name firmware-name -print0 2>/dev/null)
+  if [[ -z $name ]]; then
+    return 0
+  elif [[ ! -f $inputs/ftab.bin ]]; then
+    warning "No N1 firmware inputs in $inputs: Wi-Fi and Bluetooth stay off"
+  else
+    image=$(mktemp)
+    if "$stitcher" "$inputs" "$image"; then
+      add_file "$image" "/lib/firmware/$name" 644
+    else
+      warning "Could not build /lib/firmware/$name: Wi-Fi and Bluetooth stay off"
+    fi
+    rm -f "$image"
+  fi
+}
+
+help() {
+  cat <<HELPEOF
+Builds the N1 (centauri) firmware image macOS sends, under the firmware-name
+the device tree gives, from ftab.bin, manifest.im4m, BWC3.img4 and
+wifi-antenna-sku-info in /lib/firmware/vendor/apple/centauri.
+HELPEOF
+}

@@ -40,6 +40,7 @@ The initramfs is systemd-based. Omarchy sets the platform's baseline of mkinitcp
 - `apple_pmp`, the power management coprocessor's driver, on the same terms, so an encrypted root does not wait 20 seconds for it before the passphrase prompt;
 - `pwm-apple` and a udev rule, so the keyboard backlight is on at the passphrase prompt;
 - a vendor firmware service that copies Apple firmware onto the root, and a second copy before `cryptsetup-pre.target` on encrypted Macs, so Wi-Fi and input work at the passphrase prompt;
+- on Macs with the N1 Wi-Fi and Bluetooth chip, that chip's firmware, built for the Mac from its own manifest, factory calibration and Wi-Fi SKU, which the installer copies into the vendor firmware;
 - a Plymouth drop-in, so the passphrase prompt is graphical;
 - the `kmod-static-nodes` ordering fix that btrfs roots need on Apple hardware.
 

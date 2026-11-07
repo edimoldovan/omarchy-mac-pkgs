@@ -1,0 +1,118 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+"""omarchy-centauri-ftab INPUTS OUT: build the N1 (centauri) Wi-Fi/Bluetooth firmware image macOS's centaurid
+sends, from the inputs the installer copies to vendorfw/apple/centauri: ftab.bin (Preboot, unsigned),
+manifest.im4m (this Mac's personalized manifest), BWC3.img4 (factory calibration), wifi-antenna-sku-info."""
+import os, struct, sys, zlib
+
+
+def der(data, offset):
+    tag = data[offset]
+    offset += 1
+    if tag & 0x1F == 0x1F:
+        number = 0
+        while True:
+            byte = data[offset]
+            offset += 1
+            number = (number << 7) | (byte & 0x7F)
+            if not byte & 0x80:
+                break
+        tag = number.to_bytes(4, "big").decode("latin1")
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        count = length & 0x7F
+        length = int.from_bytes(data[offset:offset + count], "big")
+        offset += count
+    return tag, length, offset
+
+
+def calibration(img4):
+    """The sub-containers of IMG4 { IM4P "BWC3" ver OCTET { SEQ { INT, INT, [SPAY] SET { SEQ { 4cc, IA5, data } } } } }."""
+    _, _, offset = der(img4, 0)
+    _, length, offset = der(img4, offset)
+    offset += length
+    _, _, offset = der(img4, offset)
+    for _ in range(3):
+        _, length, offset = der(img4, offset)
+        offset += length
+    _, _, offset = der(img4, offset)
+    _, length, offset = der(img4, offset)
+    end = offset + length
+    found = {}
+    while offset < end:
+        tag, length, inner = der(img4, offset)
+        if tag == "SPAY":
+            _, set_length, item = der(img4, inner)
+            set_end = item + set_length
+            while item < set_end:
+                _, item_length, field = der(img4, item)
+                item_end = field + item_length
+                _, name_length, field = der(img4, field)
+                name = img4[field:field + name_length][::-1].decode("latin1")
+                field += name_length
+                _, skip, field = der(img4, field)
+                field += skip
+                _, data_length, field = der(img4, field)
+                found[name] = img4[field:field + data_length]
+                item = item_end
+        offset = inner + length
+    return found
+
+
+def calibration_file(blobs):
+    """CentauriFirmware::setCalibration: u32 count, 64-byte entries {offset +8, size +0xc, flags 0 = raw}, data."""
+    out = bytearray(struct.pack("<I", len(blobs)) + bytes(60))
+    position = 0x40 + 0x40 * len(blobs)
+    for blob in blobs:
+        out += bytes(8) + struct.pack("<II", position, len(blob)) + bytes(48)
+        position += len(blob)
+    return bytes(out) + b"".join(blobs)
+
+
+def nvram_file(variables):
+    """ACFURTKitNVRMGenerator::copy: 'SvvN', crc32 of the records, length, capacity, 1, 1; records name[8], length, type."""
+    records = b"".join(name.ljust(8, b"\0") + struct.pack("<II", len(value), 0x20000) + value for name, value in variables)
+    length = 24 + len(records)
+    return struct.pack("<4sIIIII", b"SvvN", zlib.crc32(records), length, length, 1, 1) + records
+
+
+def stitch(ftab, manifest, added):
+    """The manifest after the file table (header 0x10/0x14), the image's files as they were, the added ones unpadded."""
+    if ftab[0x20:0x28] != b"rkosftab" or struct.unpack_from("<II", ftab, 0x10) != (0, 0):
+        raise SystemExit("ftab.bin is not an unsigned rkosftab")
+    count = struct.unpack_from("<I", ftab, 0x28)[0]
+    entries = [struct.unpack_from("<4sIII", ftab, 0x30 + 16 * index) for index in range(count)]
+    entries.sort(key=lambda entry: entry[1])
+    if entries[0][1] != 0x30 + 16 * count or entries[-1][1] + entries[-1][2] != len(ftab):
+        raise SystemExit("ftab.bin has data outside its file table")
+    table_end = 0x30 + 16 * (count + len(added))
+    shift = table_end - (0x30 + 16 * count) + ((len(manifest) + 3) & ~3)
+    header = bytearray(ftab[:0x30])
+    struct.pack_into("<II", header, 0x10, table_end, len(manifest))
+    struct.pack_into("<I", header, 0x28, count + len(added))
+    table = bytearray()
+    for index in range(count):
+        tag, offset, size, reserved = struct.unpack_from("<4sIII", ftab, 0x30 + 16 * index)
+        table += struct.pack("<4sIII", tag, offset + shift, size, reserved)
+    position = len(ftab) + shift
+    for tag, data in added:
+        table += struct.pack("<4sIII", tag, position, len(data), 0)
+        position += len(data)
+    body = ftab[0x30 + 16 * count:]
+    return bytes(header + table) + manifest + bytes(-len(manifest) % 4) + body + b"".join(data for _, data in added)
+
+
+def main():
+    inputs, out = sys.argv[1:3]
+    read = lambda name: open(os.path.join(inputs, name), "rb").read()
+    subcontainers = calibration(read("BWC3.img4"))
+    blobs = [subcontainers[name] for name in ("W2CS", "WFCS", "BTCS") if name in subcontainers]
+    sku = read("wifi-antenna-sku-info")[8:12].rstrip(b"\0")
+    added = [(b"nvrm", nvram_file([(b"wsku", sku)])), (b"_cal", calibration_file(blobs))]
+    image = stitch(read("ftab.bin"), read("manifest.im4m"), added)
+    with open(out, "wb") as file:
+        file.write(image)
+
+
+main()
