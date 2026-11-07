@@ -145,6 +145,8 @@ pass 'explicit disables survive repeated setup'
 
 [[ -f $stage/usr/share/wireplumber/wireplumber.conf.d/asahi-audio-no-suspend.conf ]] || fail 'the vendor speaker policy ships'
 pass 'the vendor speaker no-suspend policy ships'
+grep -q 'alsa.driver_name = "snd_soc_macaudio"' $stage/usr/share/wireplumber/wireplumber.conf.d/j714-speakers.conf || fail 'the J714 card gets the driver name of the speaker volume lock'
+pass 'the J714 raw speaker route is held at full volume'
 
 # sudo -i clears XDG_RUNTIME_DIR while the owner's session bus still exists at
 # /run/user/UID. systemctl --user cannot reach it then, so setup must not try.
